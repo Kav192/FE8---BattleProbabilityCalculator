@@ -1,0 +1,627 @@
+Option Explicit
+Const DELIMITER As String = "/"
+'UnitTracker subkeys.
+Const HpIndex As String = "HpIndex"
+Const MaxHp As String = "MaxHp"
+Const CurHp As String = "CurHp"
+Const IsPlayer As String = "IsPlayer"
+Const MustDie As String = "MustDie"
+'Used in ProbArray and DmgArray functions.
+Private Enum AtkOutcome
+    silencerProc = 0
+    normalHit = 1
+    normalCrit = 2
+    altHit = 3
+    altCrit = 4
+    miss = 5
+End Enum
+Sub test()
+    Dim x() As Long
+    Dim str As String
+    str = VarType(x)
+    ReDim x(0, 0)
+    MsgBox str & VarType(x)
+End Sub
+Sub Main()
+    Dim ws As Worksheet
+    Dim combatData() As Variant
+    Dim unitData() As Variant
+    Dim unitTracker As Scripting.Dictionary
+    Dim results As Scripting.Dictionary
+    Dim deathString As String
+    Dim finalProbs() As Double
+    
+    Set ws = ThisWorkbook.Worksheets("Duel")
+    ws.Range("AZ:XFD").ClearContents
+    combatData = ws.ListObjects("CombatData").DataBodyRange.Value
+    unitData = ws.ListObjects("UnitData").DataBodyRange.Value
+    Set unitTracker = GetUnitTracker(combatData, unitData)
+    Set results = ProcessData(combatData, unitTracker)
+    deathString = GetDeathString(unitTracker)
+    finalProbs = GetTalliedProbs(results, unitTracker, deathString)
+    
+    ws.Cells(1, 49).Value = "Success"
+    ws.Cells(1, 50).Value = "Fail"
+    ws.Cells(1, 51).Value = "Death"
+    ws.Cells(2, 49).Value = finalProbs(0)
+    ws.Cells(2, 50).Value = finalProbs(1)
+    ws.Cells(2, 51).Value = finalProbs(2)
+End Sub
+Function GetTalliedProbs(results As Scripting.Dictionary, unitTracker As Scripting.Dictionary, deathString As String) As Double()
+    Dim successProb As Double
+    Dim failProb As Double
+    Dim deathProb As Double
+    Dim hpString As Variant
+    Dim curProb As Double
+    Dim curIndex As Variant
+    Dim mustDieArray() As Long
+    Dim result(0 To 2) As Double
+    successProb = 0
+    failProb = 0
+    deathProb = 0
+    mustDieArray = GetMustDieIndex(unitTracker)
+    For Each hpString In results.Keys
+        curProb = results(hpString)
+        If hpString = deathString Then
+            deathProb = curProb
+        ElseIf CheckStringFailed(CStr(hpString), mustDieArray) Then
+            failProb = failProb + curProb
+        Else
+            successProb = successProb + curProb
+        End If
+    Next hpString
+    result(0) = successProb
+    result(1) = failProb
+    result(2) = deathProb
+    GetTalliedProbs = result
+End Function
+Function CheckStringFailed(hpString As String, mustDieArray() As Long) As Boolean
+    Dim hpVals() As String
+    Dim i As Long
+    If LBound(mustDieArray) Then 'Some jank because I don't know how to make empty arrays in VBA. See GetMustDieIndex function.
+        CheckStringFailed = False
+    Else
+        hpVals = Split(hpString, DELIMITER)
+        For i = LBound(mustDieArray) To UBound(mustDieArray)
+            If CLng(hpVals(mustDieArray(i))) > 0 Then
+                CheckStringFailed = True
+                Exit Function
+            End If
+        Next i
+        CheckStringFailed = False
+    End If
+End Function
+Function GetMustDieIndex(unitTracker As Scripting.Dictionary) As Long()
+    Dim resultCollection As Collection
+    Dim resultArray() As Long
+    Dim unit As Variant
+    Dim i As Long
+    Dim mustDieCount As Long
+    Set resultCollection = New Collection
+    For Each unit In unitTracker.Items
+        If (Not unit(IsPlayer)) And unit(MustDie) Then
+            resultCollection.Add unit(HpIndex)
+        End If
+    Next unit
+    mustDieCount = resultCollection.Count
+    If mustDieCount = 0 Then
+        ReDim resultArray(-1 To -1) 'Some jank because I have no idea how to make an empty array in VBA. See CheckStringFailed function.
+    Else
+        ReDim resultArray(1 To mustDieCount)
+        For i = 1 To mustDieCount
+            resultArray(1) = resultCollection(i)
+        Next i
+    End If
+    GetMustDieIndex = resultArray
+End Function
+Function GetDictToArray(processedData As Scripting.Dictionary, unitTracker As Scripting.Dictionary) As Variant()
+    Dim result() As Variant
+    Dim r As Long
+    Dim c As Long
+    Dim key As Variant
+    Dim val As Variant
+    
+    ReDim result(0 To processedData.Count, 0 To unitTracker.Count)
+    r = 0
+    c = 0
+    For Each key In unitTracker
+        result(r, c) = key
+        c = c + 1
+    Next key
+    result(r, c) = "Prob"
+    For Each key In processedData
+        r = r + 1
+        c = 0
+        For Each val In Split(key, DELIMITER)
+            result(r, c) = CLng(val)
+        Next val
+        result(r, c) = processedData(key)
+    Next key
+    GetDictToArray = result
+End Function
+Function ProcessData(combatData() As Variant, unitTracker As Scripting.Dictionary) As Scripting.Dictionary
+    Dim atkName As String, atkWpn As String, atkTer As String
+    Dim defName As String, defWpn As String, defTer As String
+    Dim canCounter As Boolean, enemyMustLive As Boolean
+    
+    Dim atkCls As String, atkIsPlayer As Boolean
+    Dim atkLvl As Long, atkMaxHp As Long, atkCurHp As Long
+    Dim atkLck As Long, atkSpeed As Long, atkHit As Long, atkCrit As Long
+    Dim atkDmg As Long, atkDmgBlock As Long, atkSilencerVuln As Long
+    Dim atkBrave As Boolean, atkHealDmg As Boolean, atkSelfDmg As Boolean
+    
+    Dim defCls As String, defIsPlayer As Boolean
+    Dim defLvl As Long, defMaxHp As Long, defCurHp As Long
+    Dim defLck As Long, defSpeed As Long, defHit As Long, defCrit As Long
+    Dim defDmg As Long, defDmgBlock As Long, defSilencerVuln As Long
+    Dim defBrave As Boolean, defHealDmg As Boolean, defSelfDmg As Boolean
+    
+    Dim hpVals As Scripting.Dictionary
+    Dim atkProbs As Scripting.Dictionary, defProbs As Scripting.Dictionary, battleSeq As Collection
+    Dim i As Long
+    
+    Set hpVals = GetStartingHpVals(unitTracker)
+    
+    For i = LBound(combatData, 1) To UBound(combatData, 1)
+        atkName = combatData(i, 1)
+        atkWpn = combatData(i, 2)
+        atkTer = combatData(i, 3)
+        defName = combatData(i, 4)
+        defWpn = combatData(i, 5)
+        defTer = combatData(i, 6)
+        canCounter = combatData(i, 7)
+        enemyMustLive = combatData(i, 8)
+        atkIsPlayer = combatData(i, 9)
+        atkCls = combatData(i, 10)
+        atkLvl = combatData(i, 11)
+        atkMaxHp = combatData(i, 12)
+        atkCurHp = combatData(i, 13)
+        atkLck = combatData(i, 14)
+        atkSpeed = combatData(i, 15)
+        atkHit = combatData(i, 16)
+        atkCrit = combatData(i, 17)
+        atkDmg = combatData(i, 18)
+        atkDmgBlock = combatData(i, 19)
+        atkSilencerVuln = combatData(i, 20)
+        atkBrave = combatData(i, 21)
+        atkHealDmg = combatData(i, 22)
+        atkSelfDmg = combatData(i, 23)
+        defIsPlayer = combatData(i, 24)
+        defCls = combatData(i, 25)
+        defLvl = combatData(i, 26)
+        defMaxHp = combatData(i, 27)
+        defCurHp = combatData(i, 28)
+        defLck = combatData(i, 29)
+        defSpeed = combatData(i, 30)
+        defHit = combatData(i, 31)
+        defCrit = combatData(i, 32)
+        defDmg = combatData(i, 33)
+        defDmgBlock = combatData(i, 34)
+        defSilencerVuln = combatData(i, 35)
+        defBrave = combatData(i, 36)
+        defHealDmg = combatData(i, 37)
+        defSelfDmg = combatData(i, 38)
+    
+        Set atkProbs = GetAtkOutcomes(atkCls, atkLvl, atkLck, atkHit, atkCrit, atkDmg, atkHealDmg, atkSelfDmg, defDmgBlock, defCls, defSilencerVuln)
+        Set defProbs = GetAtkOutcomes(defCls, defLvl, defLck, defHit, defCrit, defDmg, defHealDmg, defSelfDmg, atkDmgBlock, atkCls, atkSilencerVuln)
+        Set battleSeq = GetBattleSequence(atkSpeed, atkBrave, defSpeed, defBrave, canCounter)
+        Set hpVals = GetPermutedHpVals(atkName, atkWpn, atkProbs, defName, defWpn, defProbs, unitTracker, hpVals, battleSeq, enemyMustLive)
+    Next i
+    Set ProcessData = hpVals
+End Function
+Function GetPermutedHpVals(atkName As String, atkWpn As String, atkProbs As Scripting.Dictionary, _
+        defName As String, defWpn As String, defProbs As Scripting.Dictionary, _
+        unitTracker As Scripting.Dictionary, hpVals As Scripting.Dictionary, _
+        battleSeq As Collection, enemyMustLive As Boolean) As Scripting.Dictionary
+    Dim curHpVals As Scripting.Dictionary, newHpVals As Scripting.Dictionary
+    Dim curKey As Variant, curHpArray() As Long, curProb As Double
+    Dim newKey As String, newHpArray() As Long, newProb As Double
+    Dim i As Long
+    Dim atkCurHp As Long, defCurHp As Long
+    Dim atkIndex As Long, defIndex As Long
+    Dim atkIsPlayer As Boolean, defIsPlayer As Boolean
+    Dim hpAdjDict As Scripting.Dictionary
+    Dim hpAdj As Variant
+    Dim isAtkTurn As Boolean
+    
+    Set curHpVals = hpVals
+
+    For i = 1 To battleSeq.Count
+        Set newHpVals = New Scripting.Dictionary
+        isAtkTurn = battleSeq(i)
+        atkIndex = unitTracker(atkName)(HpIndex)
+        defIndex = unitTracker(defName)(HpIndex)
+        For Each curKey In curHpVals.Keys
+            curProb = curHpVals(curKey)
+            curHpArray = GetCurHpArray(CStr(curKey))
+            atkCurHp = curHpArray(atkIndex)
+            defCurHp = curHpArray(defIndex)
+            If (atkCurHp = 0) Or (defCurHp = 0) Then
+                newKey = curKey
+                If newHpVals.Exists(newKey) Then
+                    newHpVals(newKey) = newHpVals(newKey) + curProb
+                Else
+                    newHpVals.Add newKey, curProb
+                End If
+            Else
+                If isAtkTurn Then
+                    Set hpAdjDict = atkProbs
+                Else
+                    Set hpAdjDict = defProbs
+                End If
+                For Each hpAdj In hpAdjDict.Keys
+                    newProb = curProb * hpAdjDict(hpAdj)
+                    If isAtkTurn Then
+                        newKey = GetNewHpString(atkWpn, atkName, defName, enemyMustLive, curHpArray, CStr(hpAdj), unitTracker)
+                    Else
+                        newKey = GetNewHpString(defWpn, defName, atkName, enemyMustLive, curHpArray, CStr(hpAdj), unitTracker)
+                    End If
+                    If newHpVals.Exists(newKey) Then
+                        newHpVals(newKey) = newHpVals(newKey) + newProb
+                    Else
+                        newHpVals.Add newKey, newProb
+                    End If
+                Next hpAdj
+            End If
+        Next curKey
+        Set curHpVals = newHpVals
+    Next i
+    Set GetPermutedHpVals = curHpVals
+ End Function
+Function GetNewHpString(atkWpn As String, atkName As String, defName As String, enemyMustLive As Boolean, _
+        curHpArray() As Long, hpAdj As String, unitTracker As Scripting.Dictionary) As String
+    Const Runesword As String = "Runesword"
+    Const Nosferatu As String = "Nosferatu"
+    Const Eclipse As String = "Eclipse"
+    
+    Dim atkIndex As Long, defIndex As Long
+    Dim atkIsPlayer As Boolean, defIsPlayer As Boolean
+    Dim atkCurHp As Long, defCurHp As Long
+    Dim atkNewHp As Long, defNewHp As Long
+    Dim atkHpAdj As Long, defHpAdj As Long
+    Dim result() As Long
+    Dim lowB As Long, uppB As Long
+    Dim i As Long
+    
+    atkIndex = unitTracker(atkName)(HpIndex)
+    atkIsPlayer = unitTracker(atkName)(IsPlayer)
+    atkCurHp = curHpArray(atkIndex)
+    
+    defIndex = unitTracker(defName)(HpIndex)
+    defIsPlayer = unitTracker(defName)(IsPlayer)
+    defCurHp = curHpArray(defIndex)
+    
+    atkHpAdj = CLng(Split(hpAdj, DELIMITER)(0))
+    defHpAdj = CLng(Split(hpAdj, DELIMITER)(1))
+    'Correct Eclipse damage if attack lands.
+    If (atkWpn = Eclipse) And (defHpAdj > 0) Then defHpAdj = defCurHp - defCurHp \ 2
+    'Correct user heal on hit if defender hp is too low.
+    If ((atkWpn = Runesword) Or (atkWpn = Nosferatu)) And (defHpAdj > defCurHp) Then atkHpAdj = -defCurHp
+    
+    atkNewHp = CheckBounds(atkCurHp - atkHpAdj, CLng(unitTracker(atkName)(MaxHp)))
+    defNewHp = CheckBounds(defCurHp - defHpAdj, CLng(unitTracker(defName)(MaxHp)))
+    
+    'Player unit is dead or enemy unit is dead when not supposed to be.
+    If IsFailure(atkNewHp, atkIsPlayer, defNewHp, defIsPlayer, enemyMustLive) Then
+        'String represents failure.
+        GetNewHpString = GetDeathString(unitTracker)
+        Exit Function
+    Else
+        lowB = LBound(curHpArray)
+        uppB = UBound(curHpArray)
+        ReDim result(lowB To uppB)
+        For i = lowB To uppB
+            If i = atkIndex Then
+                result(i) = atkNewHp
+            ElseIf i = defIndex Then
+                result(i) = defNewHp
+            Else
+                result(i) = curHpArray(i)
+            End If
+        Next i
+    End If
+    GetNewHpString = GetArrayToString(result)
+End Function
+Function GetDeathString(unitTracker As Scripting.Dictionary) As String
+    Static deathString As String
+    Dim i As Long
+    If deathString = "" Then
+        For i = 1 To unitTracker.Count
+            deathString = deathString & DELIMITER & "0"
+        Next i
+        deathString = Right(deathString, Len(deathString) - 1)
+    End If
+    GetDeathString = deathString
+End Function
+Function IsFailure(atkNewHp As Long, atkIsPlayer As Boolean, defNewHp As Long, defIsPlayer As Boolean, enemyMustLive As Boolean) As Boolean
+    If (atkNewHp = 0) And (atkIsPlayer Or enemyMustLive) Then
+        IsFailure = True
+    ElseIf (defNewHp = 0) And (defIsPlayer Or enemyMustLive) Then
+        IsFailure = True
+    Else
+        IsFailure = False
+    End If
+End Function
+Function CheckBounds(val As Long, maxVal As Long) As Long
+    If val > maxVal Then
+        CheckBounds = maxVal
+    ElseIf val < 0 Then
+        CheckBounds = 0
+    Else
+        CheckBounds = val
+    End If
+End Function
+Function GetArrayToString(hpValArray() As Long) As String
+    Dim temp() As String
+    Dim i As Long
+    ReDim temp(LBound(hpValArray) To UBound(hpValArray))
+    For i = LBound(hpValArray) To UBound(hpValArray)
+        temp(i) = CStr(hpValArray(i))
+    Next i
+    GetArrayToString = Join(temp, DELIMITER)
+End Function
+Function GetCurHpArray(hpValString As String) As Long()
+    Dim hpStrings() As String
+    Dim result() As Long
+    Dim i As Long
+    Dim lowB As Long
+    Dim uppB As Long
+    hpStrings = Split(hpValString, DELIMITER)
+    lowB = LBound(hpStrings)
+    uppB = UBound(hpStrings)
+    ReDim result(lowB To uppB)
+    For i = lowB To uppB
+        result(i) = CLng(hpStrings(i))
+    Next i
+    GetCurHpArray = result
+End Function
+Function GetUnitTracker(combatData() As Variant, unitData() As Variant) As Scripting.Dictionary
+    Const atkIsPlayerIndex As Long = 9
+    Const atkMaxHpIndex As Long = 12
+    Const atkCurHpIndex As Long = 13
+    Const defIsPlayerIndex As Long = 24
+    Const defMaxHpIndex As Long = 27
+    Const defCurHpIndex As Long = 28
+    
+    Const mustDieIndex As Long = 17
+    
+    Dim result As Scripting.Dictionary
+    Dim i As Long
+    Dim atkName As String, defName As String, name As String, enemyMustDie As Boolean
+    Dim atkIsPlayer As Boolean, atkMaxHp As Long, atkCurHp As Long
+    Dim defIsPlayer As Boolean, defMaxHp As Long, defCurHp As Long
+    Set result = New Scripting.Dictionary
+    For i = LBound(combatData, 1) To UBound(combatData, 1)
+        atkName = combatData(i, 1)
+        defName = combatData(i, 4)
+        If Not result.Exists(atkName) Then
+            atkIsPlayer = combatData(i, atkIsPlayerIndex)
+            atkMaxHp = combatData(i, atkMaxHpIndex)
+            atkCurHp = combatData(i, atkCurHpIndex)
+            result.Add atkName, New Scripting.Dictionary
+            result(atkName).Add HpIndex, result.Count - 1
+            result(atkName).Add IsPlayer, atkIsPlayer
+            result(atkName).Add MaxHp, atkMaxHp
+            result(atkName).Add CurHp, atkCurHp
+        End If
+        If Not result.Exists(defName) Then
+            defIsPlayer = combatData(i, defIsPlayerIndex)
+            defMaxHp = combatData(i, defMaxHpIndex)
+            defCurHp = combatData(i, defCurHpIndex)
+            result.Add defName, New Scripting.Dictionary
+            result(defName).Add HpIndex, result.Count - 1
+            result(defName).Add IsPlayer, defIsPlayer
+            result(defName).Add MaxHp, defMaxHp
+            result(defName).Add CurHp, defCurHp
+        End If
+    Next i
+    For i = LBound(unitData, 1) To UBound(unitData, 1)
+        name = unitData(i, 1)
+        enemyMustDie = unitData(i, mustDieIndex)
+        If result.Exists(name) And Not result(name)(IsPlayer) Then
+            result(name).Add MustDie, enemyMustDie
+        End If
+    Next i
+    Set GetUnitTracker = result
+End Function
+Function GetStartingHpVals(unitTracker As Scripting.Dictionary) As Scripting.Dictionary
+    Dim name As Variant
+    Dim hpVals As String
+    Dim unit As Scripting.Dictionary
+    
+    Set GetStartingHpVals = New Scripting.Dictionary
+    hpVals = ""
+    For Each name In unitTracker.Keys
+        Set unit = unitTracker(name)
+        If unit(CurHp) = 0 And unit(IsPlayer) Then
+            GetStartingHpVals.Add GetDeathString(unitTracker), 1#
+            Exit Function
+        End If
+        hpVals = hpVals & DELIMITER & unit(CurHp)
+    Next name
+    hpVals = Right(hpVals, Len(hpVals) - 1)
+    GetStartingHpVals.Add hpVals, 1#
+End Function
+Function GetBattleSequence(atkSpeed As Long, atkBrave As Boolean, defSpeed As Long, defBrave As Boolean, canCounter As Boolean) As Collection
+    Dim result As Collection
+    Set result = New Collection
+    result.Add True
+    If atkBrave Then result.Add True
+    If canCounter Then
+        result.Add False
+        If defBrave Then result.Add False
+    End If
+    If atkSpeed - defSpeed >= 4 Then
+        result.Add True
+        If atkBrave Then result.Add True
+    ElseIf defSpeed - atkSpeed >= 4 Then
+        result.Add False
+        If defBrave Then result.Add False
+    End If
+    Set GetBattleSequence = result
+End Function
+Function GetAtkOutcomes(atkCls As String, atkLvl As Long, atkLck As Long, atkHit As Long, atkCrit As Long, atkDmg As Long, atkHealDmg As Boolean, atkSelfDmg As Boolean, _
+        defDmgBlock As Long, defCls As String, defSilencerVuln As Long) As Scripting.Dictionary
+    Dim probArray() As Double
+    Dim dmgArray() As String
+    
+    probArray = GetProbArray(atkCls, atkLvl, atkLck, atkHit, atkCrit, atkSelfDmg, defCls, defSilencerVuln)
+    dmgArray = GetDmgArray(atkDmg, defDmgBlock, atkHealDmg, atkSelfDmg)
+    
+    Set GetAtkOutcomes = GetTalliedAtkOutcomes(probArray, dmgArray)
+End Function
+Function GetTalliedAtkOutcomes(probArray() As Double, dmgArray() As String) As Scripting.Dictionary
+    Dim i As Long
+    Dim result As Scripting.Dictionary
+    Dim hpAdj As String
+    Dim adjProb As Double
+    
+    Set result = New Scripting.Dictionary
+    For i = LBound(probArray) To UBound(probArray)
+        hpAdj = dmgArray(i)
+        adjProb = probArray(i)
+        If adjProb > 0 Then
+            If result.Exists(hpAdj) Then
+                result(hpAdj) = result(hpAdj) + adjProb
+            Else
+                result.Add hpAdj, adjProb
+            End If
+        End If
+    Next i
+    Set GetTalliedAtkOutcomes = result
+End Function
+Function GetProbArray(atkCls As String, atkLvl As Long, atkLck As Long, atkHit As Long, atkCrit As Long, atkSelfDmg As Boolean, _
+        defCls As String, defSilencerVuln As Long) As Double()
+    Const baseCursedRate As Long = 31
+    Dim tempHit As Double, baseCrit As Double, tempCrit As Double, sklProc As Double, cursedProc As Double
+    Dim silencerProc As Double, normalHit As Double, normalCrit As Double, miss As Double
+    Dim altHit As Double, altCrit As Double
+    Dim result(AtkOutcome.silencerProc To AtkOutcome.miss) As Double
+    'Default Values
+    silencerProc = 0
+    altHit = 0
+    altCrit = 0
+    tempHit = Prob2RN(atkHit)
+    baseCrit = Prob1RN(atkCrit) 'baseCrit is what is used to subtract when determining final normalHit and altHit.
+    tempCrit = baseCrit 'tempCrit is what i sused to determine final normalCrit and altCrit (because some percentage is allocated for silencerProc).
+    sklProc = Prob1RN(atkLvl)
+    cursedProc = Prob1RN(baseCursedRate - atkLck)
+    'Sure Shot
+    If atkCls = "Sniper" Then
+        tempHit = tempHit + (1 - tempHit) * sklProc
+    End If
+    'Silencer
+    If atkCls = "Assassin" Then
+        silencerProc = tempHit * tempCrit * Prob1RN(defSilencerVuln)
+        tempCrit = tempCrit * (1 - Prob1RN(defSilencerVuln))
+    End If
+    'Great Shield
+    If defCls = "General" Then
+        tempHit = tempHit * (1 - sklProc)
+    End If
+    
+    normalHit = tempHit * (1 - baseCrit)
+    normalCrit = tempHit * tempCrit
+    miss = 1 - tempHit
+    If atkCls = "Wyvern Knight" Then 'Pierce
+        altHit = normalHit * sklProc
+        altCrit = normalCrit * sklProc
+        normalHit = normalHit * (1 - sklProc)
+        normalCrit = normalCrit * (1 - sklProc)
+    ElseIf atkSelfDmg Then 'Backfire
+        altHit = normalHit * cursedProc
+        altCrit = normalCrit * cursedProc
+        normalHit = normalHit * (1 - cursedProc)
+        normalCrit = normalCrit * (1 - cursedProc)
+    End If
+    
+    result(AtkOutcome.silencerProc) = silencerProc
+    result(AtkOutcome.normalHit) = normalHit
+    result(AtkOutcome.normalCrit) = normalCrit
+    result(AtkOutcome.altHit) = altHit
+    result(AtkOutcome.altCrit) = altCrit
+    result(AtkOutcome.miss) = miss
+    GetProbArray = result
+End Function
+Function GetDmgArray(atkDmg As Long, defDmgBlock As Long, atkHealDmg As Boolean, atkSelfDmg As Boolean) As String()
+    Const silencerDmg As Long = 120
+    Const missDmg As Long = 0
+    Const critMulti As Long = 3
+    Dim result(AtkOutcome.silencerProc To AtkOutcome.miss) As String
+    Dim dmg As Long
+    Dim atkHpAdj As Long
+    Dim i As Long
+    If atkDmg < 0 Then
+        dmg = atkDmg
+    Else
+        dmg = CheckBounds(atkDmg - defDmgBlock, atkDmg)
+    End If
+    
+    result(AtkOutcome.silencerProc) = silencerDmg
+    result(AtkOutcome.normalHit) = dmg
+    result(AtkOutcome.normalCrit) = dmg * critMulti
+    If atkSelfDmg Then 'Backfire
+        result(AtkOutcome.altHit) = dmg
+        result(AtkOutcome.altCrit) = dmg * critMulti
+    Else 'Pierce
+        result(AtkOutcome.altHit) = atkDmg
+        result(AtkOutcome.altCrit) = atkDmg * critMulti
+    End If
+    result(AtkOutcome.miss) = missDmg
+    For i = AtkOutcome.silencerProc To AtkOutcome.miss
+        If atkHealDmg Then
+            atkHpAdj = -result(i)
+        ElseIf atkSelfDmg And ((i = AtkOutcome.altHit) Or (i = AtkOutcome.altCrit)) Then
+            atkHpAdj = result(i)
+            result(i) = missDmg
+        Else
+            atkHpAdj = 0
+        End If
+        result(i) = atkHpAdj & DELIMITER & result(i)
+    Next i
+    GetDmgArray = result
+End Function
+Function Prob1RN(x As Long) As Double 'Naive version. Variant and CDec for decimal precision.
+    Static Prob1RNTable(1 To 99) As Double
+    Const DIVISOR As Long = 100
+    
+    If x >= 100 Then
+        Prob1RN = 1#
+        Exit Function
+    ElseIf x <= 0 Then
+        Prob1RN = 0#
+        Exit Function
+    ElseIf Prob1RNTable(x) > 0 Then
+        Prob1RN = Prob1RNTable(x)
+        Exit Function
+    End If
+    
+    Prob1RN = x / DIVISOR
+    
+    Prob1RNTable(x) = Prob1RN
+End Function
+Function Prob2RN(x As Long) As Double 'Naive version. Variant and CDec for decimal precision.
+    Static Prob2RNTable(1 To 99) As Double
+    Const DIVISOR As Long = 10000
+    
+    If x >= 100 Then
+        Prob2RN = 1#
+        Exit Function
+    ElseIf x <= 0 Then
+        Prob2RN = 0#
+        Exit Function
+    ElseIf Prob2RNTable(x) > 0 Then
+        Prob2RN = Prob2RNTable(x)
+        Exit Function
+    End If
+    
+    If x <= 50 Then
+        'Series of 2x-RN1-1 with RN1 going from RN1 = 0 to 2x-1.
+        Prob2RN = (2 * x * x + x) / DIVISOR
+    Else
+        'Indirectly computed with prob(RN1+RN2>=x) by Series of 2x-RN1 over RN1=2x-99 to 99.
+        Prob2RN = (DIVISOR - (199 - 2 * x) * (100 - x)) / DIVISOR
+    End If
+    
+    Prob2RNTable(x) = Prob2RN
+End Function
