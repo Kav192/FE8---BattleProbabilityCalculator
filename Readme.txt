@@ -7,7 +7,7 @@ Probabilities are mutually exclusive and are defined as follows:
 	Success - chance that all player units survive and all enemy units survive when they are marked to live and die when they are marked for death.
 	
 
-1.	Download the BattleCalculator.xlsm file, open and click "Enable Content".
+1.	Download the BattleCalculator.xlsm file, open and click "Enable Content". Will most likely have to check "Unblock" in file properties to enable macros.
 
 2.	Make sure Microsoft Scripting Runtime in checked as I frequently use the Scripting.Dictionary object.
 		In VBA editor (Alt+F11 if not) -> Tools -> References, check box relevant box (might have to scroll down a bit).
@@ -48,5 +48,6 @@ Probabilities are mutually exclusive and are defined as follows:
 		You can make a player Bishop heal an enemy Monster and it will compute as if it's a critical heal (3x heal).
 		Leaving Wpn or Ter blank will result in "Unequipped" or "-" respectively.
 		Only rows with non-empty atkName and defName will be processed, everything else is ignored.
+
 
 Can also move both input tables (UnitData and CombatData around), the writes happen to Cells A1:B3 on the first page, and then the "Results" sheet.
