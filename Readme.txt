@@ -48,6 +48,8 @@ Probabilities are mutually exclusive and are defined as follows:
 		You can make a player Bishop heal an enemy Monster and it will compute as if it's a critical heal (3x heal).
 		Leaving Wpn or Ter blank will result in "Unequipped" or "-" respectively.
 		Only rows with non-empty atkName and defName will be processed, everything else is ignored.
+		In this table only change pale-green filled cells.
 
 
 Can also move both input tables (UnitData and CombatData around), the writes happen to Cells A1:B3 on the first page, and then the "Results" sheet.
+
